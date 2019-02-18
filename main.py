@@ -1,56 +1,19 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
-import torchvision
 import torchvision.transforms as transforms
+import model
 from tensorboardX import SummaryWriter
 
 import numpy as np
 from data_loader import ClassDataset, LabelSet
-from gensim.models import KeyedVectors
+from torch.utils.data import DataLoader
 
 from os.path import join as PJ
 import json
+import yaml
 
 global DEVICE
-
-
-class VGG(nn.Module):
-
-    def __init__(self, freeze=True, pretrained=True, k=100, d=300):
-        super(VGG, self).__init__()
-        model = torchvision.models.vgg16_bn(pretrained=pretrained)
-        self.features = nn.Sequential(*list(model.features.children()))
-        if freeze:
-            for param in self.features.parameters():
-                param.requires_grad = False
-        self.classifier = nn.Sequential(*list(model.classifier.children())[:4])
-        self.classifier._modules['3'] = nn.Linear(4096, k * d)
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
-
-
-class RESNET(nn.Module):
-
-    def __init__(self, freeze=True, pretrained=True, k=100, d=300):
-        super(RESNET, self).__init__()
-        model = torchvision.models.resnet101(pretrained=pretrained)
-        self.features = nn.Sequential(*list(model.children())[:-1])
-        if freeze:
-            for param in self.features.parameters():
-                param.requires_grad = False
-        self.classifier = nn.Sequential(nn.Linear(2048, k * d))
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
 
 
 class HingeRankLoss():
@@ -61,64 +24,36 @@ class HingeRankLoss():
         self.k = k
         self.d = d
 
-    def _loss(self, outputs=None, labels=None, loss_form="pairwise", **kwargs):
+    def _loss(self, outputs=None, labels=None, **kwargs):
         self.outputs = outputs
         self.labels = labels
-        self.loss_form = loss_form
         self.focal = kwargs
 
         self.loss = Variable(torch.cuda.FloatTensor([0.0]), requires_grad=True)
 
         for output, label in zip(self.outputs, self.labels):
 
-            if self.loss_form == 'pairwise':
+            pos_inds = label
+            neg_inds = torch.cuda.LongTensor([i for i in range(self.concept_len) if i != label.data[0]])
 
-                pos_inds = label
-                neg_inds = torch.cuda.LongTensor([i for i in range(self.concept_len) if i != label.data[0]])
+            p_vectors = torch.stack([self.concept_vectors[p] for p in pos_inds]).t()
+            n_vectors = torch.stack([self.concept_vectors[n] for n in neg_inds]).t()
 
-                p_vectors = torch.stack([self.concept_vectors[p] for p in pos_inds]).t()
-                n_vectors = torch.stack([self.concept_vectors[n] for n in neg_inds]).t()
+            p_transformeds = torch.mm(output, p_vectors).norm(p=2, dim=0)
+            n_transformeds = torch.mm(output, n_vectors).norm(p=2, dim=0)
 
-                p_transformeds = torch.mm(output, p_vectors).norm(p=2, dim=0)
-                n_transformeds = torch.mm(output, n_vectors).norm(p=2, dim=0)
+            subloss = torch.cuda.FloatTensor([1.0])
 
-                subloss = torch.cuda.FloatTensor([1.0])
+            for p_transformed in p_transformeds:
+                for n_transformed in n_transformeds:
+                    subloss = subloss.clone() + torch.exp(p_transformed - n_transformed)
 
-                for p_transformed in p_transformeds:
-                    for n_transformed in n_transformeds:
-                        subloss = subloss.clone() + torch.exp(p_transformed - n_transformed)
-
-                self.loss = self.loss.clone() + torch.log(subloss)
-
-            elif self.loss_form.find('ce') > -1:
-
-                rank_vectors = torch.mm(output, self.concept_vectors.t()).norm(p=2, dim=0)
-                value_range = torch.max(rank_vectors) - torch.min(rank_vectors)
-                rank_vectors = 1 - (rank_vectors - min(rank_vectors)) / value_range
-
-                target = torch.zeros(self.concept_len)
-                target[label] = 1
-                target = target.type(torch.cuda.FloatTensor)
-
-                n_vectors = (1 - rank_vectors).clamp(10e-9, 1 - 10e-9)
-                p_vectors = rank_vectors.clamp(10e-9, 1. - 10e-9)
-
-                bce_loss = target * torch.log(p_vectors) + (1 - target) * torch.log(n_vectors)
-
-                if self.loss_form == 'ce_focal':
-                    focal_loss = self.focal["alpha"] * (1 - torch.exp(bce_loss)) ** self.focal["gamma"] * (-bce_loss)
-                    self.loss = self.loss.clone() + torch.mean(focal_loss)
-
-                elif self.loss_form == 'ce':
-                    self.loss = self.loss.clone() + torch.mean(-bce_loss)
-
-            else:
-                assert "Error"
+            self.loss = self.loss.clone() + torch.log(subloss)
 
         return self.loss
 
 
-def model_epoch(mode=None, epoch=0, model=None, data_loader=None, optimizer=None, labelset=None, writer=None, loss_form=""):
+def model_epoch(mode=None, epoch=0, model=None, data_loader=None, optimizer=None, labelset=None, writer=None):
 
     if mode == 'train':
         print("train")
@@ -154,8 +89,7 @@ def model_epoch(mode=None, epoch=0, model=None, data_loader=None, optimizer=None
         outputs = model(Variable(batch_img)).view(-1, K, D)
 
         if mode == 'train':
-            loss = criterion._loss(outputs=outputs, labels=batch_label,
-                                   loss_form=loss_form)
+            loss = criterion._loss(outputs=outputs, labels=batch_label)
             loss.backward()
             optimizer.step()
 
@@ -173,7 +107,7 @@ def model_epoch(mode=None, epoch=0, model=None, data_loader=None, optimizer=None
         if batch_i % 10 == 0:
             if mode == 'train':
                 tmp_loss = running_loss / 10
-                writer.add_scalar('train_loss', tmp_loss, batch_i + (epoch - 1) * len(train_val_loader))
+                writer.add_scalar('train_loss', tmp_loss, batch_i + (epoch - 1) * len(data_loader))
                 print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
                 running_loss = 0.0
             else:
@@ -185,27 +119,30 @@ def model_epoch(mode=None, epoch=0, model=None, data_loader=None, optimizer=None
 if __name__ == '__main__':
 
     # setting
-    MODEL = "RESNET101"
-    DATASET = "apy"
-    EXP_NAME = "RESNET-pairwise-SGD-m9-freeze"
+    CONFIG = yaml.load(open("config.yaml"))
+
+    MODEL = CONFIG['MODEL']
+    DATASET = CONFIG['DATASET']
+    EXP_NAME = CONFIG['EXP_NAME']
+    MODE = CONFIG['MODE']
+
+    SAVE_PATH = PJ('.', 'runs', DATASET, EXP_NAME)
+
     LOAD_MODEL = MODEL
-    # LOAD_MODEL = PJ('.', 'runs', DATASET, 'exp-' + str(EXP_NAME), 'epoch4.pkl')
+    # LOAD_MODEL = PJ(SAVE_PATH + ['epoch4.pkl'])
 
-    L_RATE = np.float64(10e-6)
-    LOSS_FORM = "pairwise"
-    OPTIM = "SGD"
-    MOMENTUM = 0.9
+    L_RATE = np.float64(CONFIG['L_RATE'])
+    OPTIM = CONFIG['OPTIM']
+    CONCEPTS = CONFIG['CONCEPTS']
 
-    START_EPOCH = 1
-    END_EPOCH = 15
+    START_EPOCH = CONFIG['START_EPOCH']
+    END_EPOCH = CONFIG['END_EPOCH']
 
-    K = 100
-    D = 300
+    K = CONFIG['K']
+    D = CONFIG['D']
 
-    TRAIN_BATCH_SIZE = 256
-    TEST_BATCH_SIZE = 256
-
-    SAVE_PATH = PJ('.', 'runs', DATASET, 'exp-' + str(EXP_NAME))
+    TRAIN_BATCH_SIZE = CONFIG['TRAIN_BATCH_SIZE']
+    TEST_BATCH_SIZE = CONFIG['TEST_BATCH_SIZE']
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -217,18 +154,15 @@ if __name__ == '__main__':
                              std=[0.229, 0.224, 0.225])])
 
     test_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])])
 
     # build model
-    if LOAD_MODEL == "VGG16":
-        model = VGG(freeze=True, pretrained=True, k=K, d=D)
-        model = model.to(DEVICE)
-
-    elif LOAD_MODEL == "RESNET101":
-        model = RESNET(freeze=True, pretrained=True, k=K, d=D)
+    if LOAD_MODEL == "RESNET101":
+        model = model.RESNET(freeze=True, pretrained=True, k=K, d=D)
         model = model.to(DEVICE)
 
     else:
@@ -236,47 +170,34 @@ if __name__ == '__main__':
         model = torch.load(LOAD_MODEL)
         model = model.to(DEVICE)
 
-    # word2vec
-    weight_path = PJ('.', 'dataset', 'google_news', 'GoogleNews-vectors-gensim-normed.bin')
-    word2vec = KeyedVectors.load(weight_path, mmap='r')
-    word2vec.vectors_norm = word2vec.vectors
-
     # label set
-    labelset = LabelSet(word2vec=word2vec)
+    labelset = LabelSet(DATASET, concepts=CONCEPTS)
 
     # dataset
-    train_val = ClassDataset(dataset=DATASET, mode='train_val',
-                             img_transform=train_transform,
-                             label_transform=labelset.train)
+    if MODE == 'train_and_val':
+        print()
 
-    test_seen = ClassDataset(dataset=DATASET, mode='test_seen',
-                             img_transform=test_transform,
-                             label_transform=labelset.all)
+    elif MODE == 'trainval_and_test':
 
-    test_unseen = ClassDataset(dataset=DATASET, mode='test_unseen',
-                               img_transform=test_transform,
-                               label_transform=labelset.test)
+        # train_dataset
+        train_dataset = ClassDataset(dataset=DATASET, mode='train_val',
+                                     img_transform=train_transform, label_transform=labelset.train)
 
-    test_unseen_all = ClassDataset(dataset=DATASET, mode='test_unseen',
-                                   img_transform=test_transform,
-                                   label_transform=labelset.all)
+        # train_loader
+        train_loader = DataLoader(train_dataset, batch_size=TRAIN_BATCH_SIZE, shuffle=True)
 
-    # data_loader
-    train_val_loader = torch.utils.data.DataLoader(train_val,
-                                                   batch_size=TRAIN_BATCH_SIZE,
-                                                   shuffle=True)
+        # test_dataset
 
-    test_seen_loader = torch.utils.data.DataLoader(test_seen,
-                                                   batch_size=TEST_BATCH_SIZE,
-                                                   shuffle=False)
+        test_dataset_names = ['test_seen', 'test_unseen', 'test_unseen_all']
+        label_transforms = [labelset.all, labelset.test, labelset.all]
 
-    test_unseen_loader = torch.utils.data.DataLoader(test_unseen,
-                                                     batch_size=TEST_BATCH_SIZE,
-                                                     shuffle=False)
+        test_datasets = {tn: ClassDataset(dataset=DATASET, mode='_'.join(tn.split('_')[:2]),
+                                          img_transform=test_transform, label_transform=l)
+                         for tn, l in zip(test_dataset_names, label_transforms)}
 
-    test_unseen_all_loader = torch.utils.data.DataLoader(test_unseen_all,
-                                                         batch_size=TEST_BATCH_SIZE,
-                                                         shuffle=False)
+        # test_loader
+        test_loaders = {tn: DataLoader(test_datasets[tn], batch_size=TEST_BATCH_SIZE, shuffle=False)
+                        for tn in test_dataset_names}
 
     writer = SummaryWriter(SAVE_PATH)
 
@@ -284,19 +205,20 @@ if __name__ == '__main__':
 
         # training
         criterion = HingeRankLoss(labelset.train, k=K)
+
         if OPTIM == "Adam":
             optimizer = optim.Adam(model.classifier.parameters(), lr=L_RATE)
+
         elif OPTIM == "SGD":
-            optimizer = optim.SGD(model.classifier.parameters(), lr=L_RATE, momentum=MOMENTUM)
+            optimizer = optim.SGD(model.classifier.parameters(), lr=L_RATE, momentum=CONFIG['MOMENTUM'])
 
         train_metrics = model_epoch(mode="train", epoch=epoch, model=model,
-                                    data_loader=train_val_loader,
-                                    optimizer=optimizer, loss_form=LOSS_FORM,
-                                    labelset=labelset.train, writer=writer)
+                                    data_loader=train_loader, labelset=labelset.train,
+                                    optimizer=optimizer, writer=writer)
 
         torch.save(model, PJ(SAVE_PATH, 'epoch' + str(epoch) + '.pkl'))
 
-        train_class = train_metrics['correct'] / (train_metrics['total'] + 1e-10)
+        train_class = train_metrics['correct'] / (train_metrics['total'] + 1e-10).data
         train_acc = torch.sum(train_class) / len(labelset.train['concept_id'])
         writer.add_scalar('train_acc', train_acc * 100, epoch)
 
@@ -306,44 +228,29 @@ if __name__ == '__main__':
         #         param_group['lr'] = L_RATE
         #     writer.add_scalar('learning_rate', L_RATE, batch_i + (epoch - 1) * len(trainloader))
 
-        # validation
+        # test
+        test_accs = {}
+        test_classes = {}
+        test_sizes = [len(labelset.train['concept_id']),
+                      len(labelset.test['concept_id']),
+                      len(labelset.test['concept_id'])]
 
-        # test_seen
-        test_seen_metrics = model_epoch(mode="test", epoch=epoch, model=model,
-                                        data_loader=test_seen_loader,
-                                        labelset=labelset.all, writer=writer)
+        for tn, l, ts in zip(test_dataset_names, label_transforms, test_sizes):
+            metric = model_epoch(mode="test", epoch=epoch, model=model,
+                                 data_loader=test_loaders[tn],
+                                 labelset=l, writer=writer)
 
-        test_seen_class = test_seen_metrics['correct'] / (test_seen_metrics['total'] + 1e-10)
-        test_seen_acc = torch.sum(test_seen_class) / len(labelset.train['concept_id'])
-        writer.add_scalar('test_seen_acc', test_seen_acc * 100, epoch)
+            test_class = metric['correct'] / (metric['total'] + 1e-10).data
+            test_acc = torch.sum(test_class) / ts
+            writer.add_scalar(tn + '_acc', test_acc * 100, epoch)
 
-        # test_unseen
-        test_unseen_metrics = model_epoch(mode="test", epoch=epoch, model=model,
-                                          data_loader=test_unseen_loader,
-                                          labelset=labelset.test, writer=writer)
+            test_accs[tn] = test_acc
+            test_classes[tn] = test_class.cpu().numpy().tolist()
 
-        test_unseen_class = test_unseen_metrics['correct'] / (test_unseen_metrics['total'] + 1e-10)
-        test_unseen_acc = torch.sum(test_unseen_class) / len(labelset.test['concept_id'])
-        writer.add_scalar('test_unseen_acc', test_unseen_acc * 100, epoch)
+        H = 2 * test_accs['test_seen'] * test_accs['test_unseen_all'] / \
+            (test_accs['test_seen'] + test_accs['test_unseen_all'])
 
-        # test_unseen_all
-        test_unseen_all_metrics = model_epoch(mode="test", epoch=epoch, model=model,
-                                              data_loader=test_unseen_loader,
-                                              labelset=labelset.all, writer=writer)
+        writer.add_scalar('H_acc', H * 100, epoch)
 
-        test_unseen_all_class = test_unseen_all_metrics['correct'] / (test_unseen_all_metrics['total'] + 1e-10)
-        test_unseen_all_acc = torch.sum(test_unseen_all_class) / len(labelset.test['concept_id'])
-        writer.add_scalar('test_unseen_all_acc', test_unseen_all_acc * 100, epoch)
-
-        H = 2 * test_seen_acc * test_unseen_all_acc / (test_seen_acc + test_unseen_all_acc)
-        writer.add_scalar('H_acc', H, epoch)
-
-        f = open(PJ(SAVE_PATH, "table.txt"), "a+")
-        table = json.dump({str(epoch):
-                           {'test_seen': test_seen_class.cpu().detach().numpy().tolist(),
-                            'test_unseen_all': test_unseen_all_class.cpu().detach().numpy().tolist(),
-                            'test_unseen': test_unseen_class.data.cpu().detach().numpy().tolist()}
-                           }, f)
-        f.close()
-
-    writer.close()
+        with open(PJ(SAVE_PATH, "table.txt"), "a+") as f:
+            table = json.dump({str(epoch): test_classes}, f)
