@@ -1,67 +1,40 @@
-import pandas as pd 
-import cv2
 from os.path import join as PJ
 import scipy.io as sio
-
+from pandas import DataFrame as df
+from pandas import read_csv
+import cv2
+import os
 
 DATASET = "apy"
 
-DATALIST = ["apascal_train", "apascal_test", "ayahoo_test"]
-
-REPLACE_IMG = False
-CROP = True
-DATA = "ayahoo_test"
-
 ROOT = PJ("..", "dataset")
-concept_filename = PJ(ROOT, DATASET, "list", "concepts.txt")
+XLSA17 = PJ(ROOT, "xlsa17", "data", DATASET)
 
-ATT_SPLITS = sio.loadmat(PJ(ROOT, "xlsa17", "data", DATASET, "att_splits.mat"))
-RES101 = sio.loadmat(PJ(ROOT, "xlsa17", "data", DATASET, "res101.mat"))
+ATT_SPLITS = sio.loadmat(PJ(XLSA17, "att_splits.mat"))
+RES101 = sio.loadmat(PJ(XLSA17, "res101.mat"))
 
-ORIGIN_ATTR = PJ(ROOT, DATASET, "attribute_data")
+ORIGIN_ATTR = read_csv(PJ(XLSA17, "origin_attr.txt"), delimiter=" ", header=None)
+origin_data = ORIGIN_ATTR.iloc[:, 0: 6]
+# print(origin_data)
 
-if REPLACE_IMG:
+concepts = [label[0][0] for label in ATT_SPLITS['allclasses_names']]
 
-    img_files = []
-    for d in DATALIST:
-        data = pd.read_csv(PJ(ORIGIN_ATTR, d + ".txt"), header=None, delimiter=" ")
-        img_files += [PJ("img", d + "_" + str(i + 1) + ".jpg") for i in range(len(data))]
+# reorganize data
+img_files = [filter(None, i[0][0].split('/')) for i in RES101['image_files']]
+img_files = [PJ(*list(i)[5:]) for i in img_files]
 
-    labels = RES101['labels'].reshape(-1)
-    labels = labels - 1
+labels = RES101['labels'].reshape(-1)
+labels = labels - 1
 
-    data = pd.DataFrame({'img_path': img_files, 'label': labels})
+data = df({'img_path': img_files, 'label': labels})
 
-    train_val = data.iloc[ATT_SPLITS['trainval_loc'].reshape(-1) - 1]
-    test_seen = data.iloc[ATT_SPLITS['test_seen_loc'].reshape(-1) - 1]
-    test_unseen = data.iloc[ATT_SPLITS['test_unseen_loc'].reshape(-1) - 1]
+if not os.path.isdir(PJ(ROOT, DATASET, "img", "img")):
+    os.makedirs(PJ(ROOT, DATASET, "img", "img"))
 
-    train_val.to_csv(PJ(ROOT, DATASET, "list", "train_val.txt"), index=False, header=False)
-    test_seen.to_csv(PJ(ROOT, DATASET, "list", "test_seen.txt"), index=False, header=False)
-    test_unseen.to_csv(PJ(ROOT, DATASET, "list", "test_unseen.txt"), index=False, header=False)
+for (i, d1), (_, d2) in zip(data.iterrows(), origin_data.iterrows()):
 
+    img = cv2.imread(PJ(ROOT, DATASET, "img", d1['img_path']))
+    x_min, y_min, x_max, y_max = d2[2: 6].values
+    croped_img = img[y_min: y_max, x_min: x_max, :]
 
-if CROP:
-
-    data = pd.read_csv(PJ(ORIGIN_ATTR, DATA + ".txt"), header=None, delimiter=" ")
-
-    # length = range(len(data))
-    length = [2210]
-    for i in length:
-
-        img_path = data.iloc[i, 0]
-
-        if DATA.find("apascal") > -1:
-            img_path = PJ(ROOT, DATASET, "img", "APY/images_att/VOCdevkit/VOC2008/JPEGImages", img_path)
-        elif DATA.find("ayahoo") > -1:
-            img_path = PJ(ROOT, DATASET, "img", "APY/ayahoo_test_images", img_path)
-
-        img = cv2.imread(img_path)
-        print(img_path)
-        print(img.shape)
-
-        x_min, y_min, x_max, y_max = data.iloc[i, 2: 6]
-        print(data.iloc[i, 2: 6])
-        croped_img = img[y_min: y_max, x_min: x_max, :]
-
-        cv2.imwrite(PJ(".", "img", DATA + "_" + str(i + 1) + ".jpg"), croped_img)
+    cv2.imwrite(PJ(ROOT, DATASET, "img", "img", str(i).zfill(5) + "_" + d2[0].split('/')[-1].strip(".jpg") + "_" + d2[1] + ".jpg"), croped_img)
