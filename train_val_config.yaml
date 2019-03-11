@@ -1,0 +1,19 @@
+exp_name: trainval_concepts_attr_k100_1
+
+dataset: sun
+concepts: attr
+
+model: RESNET101
+
+start_epoch: 1
+end_epoch: 26
+
+search_mode: False
+l_rate: 1e-4
+momentum: 0.9
+
+k: 100
+d: 102
+
+train_batch_size: 256
+val_batch_size: 512
