@@ -3,6 +3,7 @@ from os.path import join as PJ
 import re
 import yaml
 import pandas as pd
+import numpy as np
 from gensim.models import KeyedVectors
 
 # config
@@ -14,10 +15,10 @@ ORIGIN = PJ(ROOT, DATASET, "0origin")
 # replace word
 
 REPLACE = {
-    "colour": "color",
-    "colours": "colors",
-    "colourful": "colorful",
-    "grey": "gray",
+    "colour": "Color",
+    "colours": "Colors",
+    "colourful": "Colorful",
+    "grey": "Grey",
     "olympus": "Olympus",
     "harbour": "Harbour",
     "nederland": "Nederland",
@@ -96,10 +97,11 @@ for i, w in enumerate(wordlists['train']):
 
 # output vector file
 print("output word embedding file")
+word_vec_dict = {}
 for l in lists:
-    word_vec_dict = {w: word2vec[w] for w in wordlists[l]}
-    filename = PJ(CONCEPT_LIST, "concept_vec_" + l + ".txt")
-    pd.DataFrame.from_dict(word_vec_dict).to_csv(filename, index=False)
+    word_vec_dict.update({w: word2vec[w] for w in wordlists[l]})
+filename = PJ(CONCEPT_LIST, "concepts_vec.txt")
+pd.DataFrame.from_dict(word_vec_dict).to_csv(filename, index=False)
 
 ################################
 # split data into train / test
@@ -127,15 +129,18 @@ train_data = data[data[0].isin(train_list[0])]
 test_data = data[data[0].isin(test_list[0])]
 
 # insert train/test path
-train_data.loc[:, 0] = 'train\\' + train_data.loc[:, 0]
-test_data.loc[:, 0] = 'test\\' + test_data.loc[:, 0]
+train_data.loc[:, 0] = 'train/img/' + train_data.loc[:, 0].str.replace(r"[^\s]+\\", "", regex=True)
+test_data.loc[:, 0] = 'test/img/' + test_data.loc[:, 0].str.replace(r"[^\s]+\\", "", regex=True)
 
 # remove empty label
-train_data = train_data[(train_data.iloc[:, 1:] == 1).sum(axis=1) > 0]
+train_data = train_data[(train_data.iloc[:, 1:926] == 1).sum(axis=1) > 0]
 test_data = test_data[(test_data.iloc[:, 1:] == 1).sum(axis=1) > 0]
 
 print("number of train data", train_data.shape[0])
 print("number of test data", test_data.shape[0])
 
-train_data.to_csv(PJ(SPLIT_LIST, "train.txt"), index=False)
-test_data.to_csv(PJ(SPLIT_LIST, "test.txt"), index=False)
+# fmt = ['%s'] + ['%i'] * (train_data.shape[1] - 1)
+# np.savetxt(PJ(SPLIT_LIST, "train.txt"), train_data.values, delimiter=",", fmt=' '.join(fmt))
+# np.savetxt(PJ(SPLIT_LIST, "test.txt"), test_data.values, delimiter=",", fmt=' '.join(fmt))
+train_data.to_csv(PJ(SPLIT_LIST, "train.txt"), index=False, header=False)
+test_data.to_csv(PJ(SPLIT_LIST, "test.txt"), index=False, header=False)

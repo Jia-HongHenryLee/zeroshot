@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 from model import RESNET, model_epoch
 
-from utils import cal_acc
+import utils
 
 import numpy as np
 from os.path import join as PJ
@@ -26,7 +26,7 @@ if __name__ == '__main__':
     DATASET = CONFIG['dataset']
     CONCEPTS = CONFIG['concepts']
 
-    SAVE_PATH = PJ('.', 'test_runs', DATASET, EXP_NAME)
+    SAVE_PATH = PJ('.', 'runs_multi', DATASET, EXP_NAME)
     LOAD_MODEL = None
     # LOAD_MODEL = PJ(SAVE_PATH, 'epoch' + str(CONFIG['start_epoch'] - 1) + '.pkl')
 
@@ -49,17 +49,17 @@ if __name__ == '__main__':
     STATE = {
         'dataset': DATASET,
         'mode': 'train_test',
-        'split_list': ['trainval', 'test_seen', 'test_unseen']
+        'split_list': ['train', 'test']
     }
 
     # data setting
+    print("load data")
     concepts = ConceptSets(STATE, CONCEPTS)
 
     datasets = ClassDatasets(STATE)
 
-    train_loader = DataLoader(datasets['trainval'], batch_size=CONFIG['train_batch_size'], shuffle=True)
-    test_loaders = {tn: DataLoader(datasets[tn], batch_size=CONFIG['test_batch_size'], shuffle=False)
-                    for tn in STATE['split_list'][1:]}
+    train_loader = DataLoader(datasets['train'], batch_size=CONFIG['train_batch_size'], shuffle=True, num_workers=4)
+    test_loader = DataLoader(datasets['test'], batch_size=CONFIG['test_batch_size'], shuffle=False, num_workers=4)
 
     ##########################################################################################
 
@@ -78,51 +78,47 @@ if __name__ == '__main__':
         scheduler.step()
 
         # training
-        train_metrics = model_epoch(loss_name="trainval", mode="train", epoch=epoch,
-                                    model=model, k=CONFIG['k'], d=CONFIG['d'],
+        train_metrics = model_epoch(loss_name="train", mode="train", epoch=epoch,
+                                    model=model, k=CONFIG['k'], d=CONFIG['d'], sample_rate=CONFIG['sample'],
                                     data_loader=train_loader, concepts=concepts,
                                     optimizer=optimizer, writer=writer)
 
         torch.save(model.state_dict(), PJ(SAVE_PATH, 'epoch' + str(epoch) + '.pkl'))
 
-        train_class, train_acc = cal_acc(train_metrics)
-        writer.add_scalar('trainval_acc', train_acc * 100, epoch)
+        for g in [False, True]:
+            record_name = 'train_g' if g else 'train'
+            train_iaps, train_miap = utils.cal_miap(train_metrics, g)
+            writer.add_scalar(record_name + '_miap', train_miap * 100, epoch)
 
         ######################################################################################
 
         # test
-        record = {tn: {'acc': 0.0, 'class': None} for tn in STATE['split_list'][1:]}
-        record.update({tn + '_g': {'acc': 0.0, 'class': None} for tn in STATE['split_list'][1:]})
+        record = {'test': {'miap': 0.0, 'iaps': None, 'top3_prf1': None, 'top10_prf1': None},
+                  'test_g': {'miap': 0.0, 'iaps': None, 'top3_prf1': None, 'top10_prf1': None}}
 
-        for tn in STATE['split_list'][1:]:
-            test_metric = model_epoch(mode="test", epoch=epoch, loss_name=tn,
-                                      model=model, k=CONFIG['k'], d=CONFIG['d'],
-                                      data_loader=test_loaders[tn], concepts=concepts,
-                                      optimizer=optimizer, writer=writer)
+        test_metric = model_epoch(mode="test", epoch=epoch, loss_name='test',
+                                  model=model, k=CONFIG['k'], d=CONFIG['d'], sample_rate=CONFIG['sample'],
+                                  data_loader=test_loader, concepts=concepts,
+                                  optimizer=optimizer, writer=writer)
 
-            test_class, test_acc = cal_acc(test_metric)
-            record[tn]['acc'] = test_acc
-            record[tn]['class'] = test_class
+        for g in [False, True]:
+            test_iaps, test_miap = utils.cal_miap(test_metric, general=g)
+            test_top3_prf1, test_top10_prf1 = utils.cal_top(test_metric, general=g)
+            record_name = 'test_g' if g else 'test'
+            record[record_name]['miap'] = test_miap.item()
+            record[record_name]['iaps'] = [i.item() for i in test_iaps]
+            record[record_name]['top3_prf1'] = {k: v.item() for k, v in test_top3_prf1.items()}
+            record[record_name]['top10_prf1'] = {k: v.item() for k, v in test_top10_prf1.items()}
 
-            test_g_class, test_g_acc = cal_acc(test_metric, general=True)
-            record[tn + '_g']['acc'] = test_g_acc
-            record[tn + '_g']['class'] = test_g_class
+        writer.add_scalar('test_miap', record['test']['miap'] * 100, epoch)
+        writer.add_scalar('test_g_miap', record['test_g']['miap'] * 100, epoch)
 
-            writer.add_scalar(tn + '_acc', test_acc * 100, epoch)
-            writer.add_scalar(tn + '_g_acc', test_g_acc * 100, epoch)
+        text = utils.write_table({'top3': record['test']['top3_prf1'], 'top10': record['test']['top10_prf1']})
+        writer.add_text('Test Table', text, epoch)
 
-        # per-class acc
-        pc_class = record['test_seen']['class'].copy()
-        pc_class.update(record['test_unseen']['class'])
-        pc_acc = sum(list(pc_class.values())) / len(pc_class)
-        writer.add_scalar('Acc_per_class', pc_acc * 100, epoch)
-
-        # gzsl acc: H acc
-        H_acc = 2 * record['test_seen_g']['acc'] * record['test_unseen_g']['acc'] / \
-            (record['test_seen_g']['acc'] + record['test_unseen_g']['acc'] + 1e-10)
-        writer.add_scalar('H_acc', H_acc * 100, epoch)
+        text = utils.write_table({'top3': record['test_g']['top3_prf1'], 'top10': record['test_g']['top10_prf1']})
+        writer.add_text('Test_g Table', text, epoch)
 
         ######################################################################################
-
-        with open(PJ(SAVE_PATH, "val_table.txt"), "a+") as f:
+        with open(PJ(SAVE_PATH, "test_table.txt"), "a+") as f:
             table = yaml.dump({str(epoch): record}, f)

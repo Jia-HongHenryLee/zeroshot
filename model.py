@@ -1,8 +1,11 @@
+import time
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
+import numpy as np
 from torchvision.models import vgg16_bn as vgg16_bn
 from torchvision.models import resnet101 as resnet101
+from torchvision.models import resnet152 as resnet152
 
 global DEVICE
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,7 +34,7 @@ class RESNET(nn.Module):
 
     def __init__(self, freeze=True, pretrained=True, k=100, d=300):
         super(RESNET, self).__init__()
-        model = resnet101(pretrained=pretrained)
+        model = resnet152(pretrained=pretrained)
         self.features = nn.Sequential(*list(model.children())[:-1])
         if freeze:
             for param in self.features.parameters():
@@ -45,7 +48,7 @@ class RESNET(nn.Module):
         return x
 
 
-def model_epoch(mode, epoch, loss_name, model, k, d, data_loader, concepts, optimizer, writer):
+def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, concepts, optimizer, writer):
 
     # loss_function
     class HingeRankLoss():
@@ -54,6 +57,7 @@ def model_epoch(mode, epoch, loss_name, model, k, d, data_loader, concepts, opti
             self.concept = concept
             self.k = k
             self.d = d
+            self.sample_rate = sample_rate
 
         def _loss(self, outputs=None, labels=None, mode="train"):
             self.outputs = outputs
@@ -67,20 +71,25 @@ def model_epoch(mode, epoch, loss_name, model, k, d, data_loader, concepts, opti
 
             for output, label in zip(self.outputs, self.labels):
 
-                pos_ind = [label.item()]
-                neg_inds = [cl for cl in self.concept['concept_label'] if cl not in pos_ind]
+                label = label[self.concept['concept_label']]
 
-                p_vectors = torch.stack([self.concept['concept_vector'][p] for p in pos_ind]).t()
-                n_vectors = torch.stack([self.concept['concept_vector'][n] for n in neg_inds]).t()
+                pos_inds = (label == 1).nonzero().reshape(-1).tolist()
+                neg_inds = (label == 0).nonzero().reshape(-1).tolist()
 
-                p_transformeds = torch.mm(output, p_vectors).norm(p=2, dim=0)
-                n_transformeds = torch.mm(output, n_vectors).norm(p=2, dim=0)
+                if sample_rate > 0 and self.mode == 'train':
+                    neg_inds = np.random.choice(neg_inds, sample_rate, replace=False)
 
-                subloss = torch.cuda.FloatTensor([1.0])
+                p_vectors = self.concept['concept_vector'][pos_inds]
+                n_vectors = self.concept['concept_vector'][neg_inds]
 
-                for p_transformed in p_transformeds:
-                    for n_transformed in n_transformeds:
-                        subloss = subloss.clone() + torch.exp(p_transformed - n_transformed)
+                if p_vectors.nelement() == 0:
+                    continue
+
+                p_trans = torch.mm(output, p_vectors.t()).norm(p=2, dim=0)
+                n_trans = torch.mm(output, n_vectors.t()).norm(p=2, dim=0)
+
+                subloss = torch.sum(torch.stack([torch.exp(p - n) for n in n_trans for p in p_trans]))
+                subloss = torch.cuda.FloatTensor([1.0]) + subloss.clone()
 
                 self.loss = self.loss.clone() + torch.log(subloss)
 
@@ -103,9 +112,10 @@ def model_epoch(mode, epoch, loss_name, model, k, d, data_loader, concepts, opti
     criterion = HingeRankLoss(concepts[loss_name], k, d)
 
     metrics = {
-        'total': {l: 0 for l in concepts[loss_name]['concept_label']},
-        'correct': {l: 0 for l in concepts[loss_name]['concept_label']},
-        'correct_g': {l: 0 for l in concepts['general']['concept_label']}
+        'predicts_zsl': np.empty((0, len(concepts[loss_name]['concept_label']))),
+        'predicts_gzsl': np.empty((0, len(concepts['general']['concept_label']))),
+        'gts_zsl': np.empty((0, len(concepts[loss_name]['concept_label']))),
+        'gts_gzsl': np.empty((0, len(concepts['general']['concept_label'])))
     }
 
     running_loss = 0.0
@@ -128,39 +138,33 @@ def model_epoch(mode, epoch, loss_name, model, k, d, data_loader, concepts, opti
 
         running_loss += loss.item() / batch_label.shape[0]
 
-        concept_vectors = torch.stack(list(concepts[loss_name]['concept_vector'].values())).t()
+        # predict
+        concept_vectors = concepts[loss_name]['concept_vector'].t()
         concept_vectors = concept_vectors.expand(outputs.shape[0], d, -1)
+        p_ranks = torch.bmm(outputs, concept_vectors).norm(p=2, dim=1)
 
-        p_rank = torch.bmm(outputs, concept_vectors).norm(p=2, dim=1)
-        p_label = torch.min(p_rank, dim=1)[1]
-        p_label = [concepts[loss_name]['id2label'][p.item()] for p in p_label]
+        for p_rank, gts in zip(p_ranks, batch_label):
+            p_rank = 1 / (p_rank) / sum(1 / (p_rank))
+            gts = gts[concepts[loss_name]['concept_label']]
+            metrics['predicts_zsl'] = np.append(metrics['predicts_zsl'], np.array([p_rank.tolist()]), axis=0)
+            metrics['gts_zsl'] = np.append(metrics['gts_zsl'], np.array([gts.tolist()]), axis=0)
 
         # general
-        concept_vectors_g = torch.stack(list(concepts['general']['concept_vector'].values())).t()
+        concept_vectors_g = concepts['general']['concept_vector'].t()
         concept_vectors_g = concept_vectors_g.expand(outputs.shape[0], d, -1)
+        g_ranks = torch.bmm(outputs, concept_vectors_g).norm(p=2, dim=1)
 
-        g_rank = torch.bmm(outputs, concept_vectors_g).norm(p=2, dim=1)
-        g_label = torch.min(g_rank, dim=1)[1]
-        g_label = [concepts['general']['id2label'][g.item()] for g in g_label]
+        for g_rank, g_gts in zip(g_ranks, batch_label):
+            g_rank = 1 / (g_rank) / sum(1 / (g_rank))
+            metrics['predicts_gzsl'] = np.append(metrics['predicts_gzsl'], np.array([g_rank.tolist()]), axis=0)
+            metrics['gts_gzsl'] = np.append(metrics['gts_gzsl'], np.array([g_gts.tolist()]), axis=0)
 
-        for gt, p, g in zip(batch_label.reshape(-1), p_label, g_label):
-            if gt == p:
-                metrics['correct'][p] += 1
-            if gt == g:
-                metrics['correct_g'][g] += 1
+        # output loss
+        tmp_loss = running_loss
+        writer.add_scalar(loss_name + '_loss', tmp_loss, batch_i + (epoch - 1) * len(data_loader))
+        print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
+        running_loss = 0.0
 
-            metrics['total'][gt.item()] += 1
-
-        if batch_i % 3 == 0 and loss_name == 'trainval':
-            tmp_loss = running_loss / 3
-            writer.add_scalar('train_loss', tmp_loss, batch_i + (epoch - 1) * len(data_loader))
-            print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
-            running_loss = 0.0
-
-        if loss_name is not 'trainval':
-            tmp_loss = running_loss
-            writer.add_scalar(loss_name + '_loss', tmp_loss, batch_i + (epoch - 1) * len(data_loader))
-            print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
-            running_loss = 0.0
+        break
 
     return metrics

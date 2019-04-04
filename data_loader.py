@@ -50,7 +50,7 @@ def ConceptSets(state, concepts):
         if split_mode in ['train', 'trainval', 'test_seen']:
             concept_label = concept_split['train_id']
 
-        elif split_mode in ['val', 'test_unseen']:
+        elif split_mode in ['val', 'test', 'test_unseen']:
             concept_label = concept_split['test_id']
 
         elif split_mode in ['general']:
@@ -58,11 +58,9 @@ def ConceptSets(state, concepts):
         else:
             assert "Split Mode Error"
 
-        concept_vector = {i: torch.cuda.FloatTensor(concept_file.iloc[:, i].values) for i in concept_label}
+        concept_vector = [torch.cuda.FloatTensor(concept_file.iloc[:, i].values) for i in concept_label]
 
-        id2label = {idx: label for idx, label in enumerate(concept_label)}
-
-        return {'concept_label': concept_label, 'concept_vector': concept_vector, 'id2label': id2label}
+        return {'concept_label': concept_label, 'concept_vector': torch.stack(concept_vector)}
 
     concept_split = _concept_split()
     return {s: _concept(s, concept_split) for s in split_list}
@@ -81,6 +79,7 @@ def ClassDatasets(state):
             self.csv_file = PJ(self.root, 'list', state['mode'], self.split_mode.strip("_g") + '.txt')
 
             self.data = pd.read_csv(self.csv_file, header=None)
+
             self.img_transform = self.img_transform()
 
         def __len__(self):
@@ -88,10 +87,10 @@ def ClassDatasets(state):
 
         def __getitem__(self, idx):
 
-            image = Image.open(PJ(self.root, 'img', self.data.iloc[idx, 0])).convert('RGB')
+            image = Image.open(PJ(self.root, self.data.iloc[idx, 0])).convert('RGB')
             image = self.img_transform(image)
 
-            label = torch.LongTensor([self.data.iloc[idx, 1]])
+            label = torch.LongTensor(self.data.iloc[idx, 1:].tolist())
 
             sample = {'image': image, 'label': label}
             return sample
