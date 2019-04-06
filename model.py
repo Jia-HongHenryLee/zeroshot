@@ -1,8 +1,9 @@
-import time
+import utils
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
 import numpy as np
+from collections import deque
 from torchvision.models import vgg16_bn as vgg16_bn
 from torchvision.models import resnet101 as resnet101
 from torchvision.models import resnet152 as resnet152
@@ -112,10 +113,10 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
     criterion = HingeRankLoss(concepts[loss_name], k, d)
 
     metrics = {
-        'predicts_zsl': np.empty((0, len(concepts[loss_name]['concept_label']))),
-        'predicts_gzsl': np.empty((0, len(concepts['general']['concept_label']))),
-        'gts_zsl': np.empty((0, len(concepts[loss_name]['concept_label']))),
-        'gts_gzsl': np.empty((0, len(concepts['general']['concept_label'])))
+        'predicts_zsl': deque(),
+        'predicts_gzsl': deque(),
+        'gts_zsl': deque(),
+        'gts_gzsl': deque()
     }
 
     running_loss = 0.0
@@ -138,16 +139,25 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
 
         running_loss += loss.item() / batch_label.shape[0]
 
+        # tmp_metric
+        tmp_metric = {
+            'predicts_zsl': deque(),
+            'predicts_gzsl': deque(),
+            'gts_zsl': deque(),
+            'gts_gzsl': deque()
+        }
+
         # predict
         concept_vectors = concepts[loss_name]['concept_vector'].t()
         concept_vectors = concept_vectors.expand(outputs.shape[0], d, -1)
         p_ranks = torch.bmm(outputs, concept_vectors).norm(p=2, dim=1)
 
         for p_rank, gts in zip(p_ranks, batch_label):
-            p_rank = 1 / (p_rank) / sum(1 / (p_rank))
             gts = gts[concepts[loss_name]['concept_label']]
-            metrics['predicts_zsl'] = np.append(metrics['predicts_zsl'], np.array([p_rank.tolist()]), axis=0)
-            metrics['gts_zsl'] = np.append(metrics['gts_zsl'], np.array([gts.tolist()]), axis=0)
+            tmp_metric['predicts_zsl'].append(np.array(p_rank.tolist()))
+            tmp_metric['gts_zsl'].append(np.array(gts.tolist()))
+            metrics['predicts_zsl'].append(np.array(p_rank.tolist()))
+            metrics['gts_zsl'].append(np.array(gts.tolist()))
 
         # general
         concept_vectors_g = concepts['general']['concept_vector'].t()
@@ -155,9 +165,10 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
         g_ranks = torch.bmm(outputs, concept_vectors_g).norm(p=2, dim=1)
 
         for g_rank, g_gts in zip(g_ranks, batch_label):
-            g_rank = 1 / (g_rank) / sum(1 / (g_rank))
-            metrics['predicts_gzsl'] = np.append(metrics['predicts_gzsl'], np.array([g_rank.tolist()]), axis=0)
-            metrics['gts_gzsl'] = np.append(metrics['gts_gzsl'], np.array([g_gts.tolist()]), axis=0)
+            tmp_metric['predicts_gzsl'].append(np.array(g_rank.tolist()))
+            tmp_metric['gts_gzsl'].append(np.array(gts.tolist()))
+            metrics['predicts_gzsl'].append(np.array(g_rank.tolist()))
+            metrics['gts_gzsl'].append(np.array(g_gts.tolist()))
 
         # output loss
         tmp_loss = running_loss
@@ -165,6 +176,8 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
         print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
         running_loss = 0.0
 
-        break
+        # record miap
+        writer.add_scalar(loss_name + 'tmp_miap', utils.cal_miap(tmp_metric)[1], batch_i + (epoch - 1) * len(data_loader))
+        writer.add_scalar(loss_name + 'tmp_g_miap', utils.cal_miap(tmp_metric, True)[1], batch_i + (epoch - 1) * len(data_loader))
 
     return metrics

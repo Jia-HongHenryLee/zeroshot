@@ -139,8 +139,5 @@ test_data = test_data[(test_data.iloc[:, 1:] == 1).sum(axis=1) > 0]
 print("number of train data", train_data.shape[0])
 print("number of test data", test_data.shape[0])
 
-# fmt = ['%s'] + ['%i'] * (train_data.shape[1] - 1)
-# np.savetxt(PJ(SPLIT_LIST, "train.txt"), train_data.values, delimiter=",", fmt=' '.join(fmt))
-# np.savetxt(PJ(SPLIT_LIST, "test.txt"), test_data.values, delimiter=",", fmt=' '.join(fmt))
 train_data.to_csv(PJ(SPLIT_LIST, "train.txt"), index=False, header=False)
 test_data.to_csv(PJ(SPLIT_LIST, "test.txt"), index=False, header=False)

@@ -1,4 +1,4 @@
-exp_name: traintest_1
+exp_name: traintest_sgd
 
 dataset: nus_wide
 concepts: vec

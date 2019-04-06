@@ -67,7 +67,10 @@ if __name__ == '__main__':
 
     # optim setting
     params = model.classifier.parameters() if CONFIG['freeze'] else model.parameters()
-    optimizer = optim.SGD(params, L_RATE, momentum=CONFIG['momentum'])
+    if CONFIG['optim'] == 'SGD':
+        optimizer = optim.SGD(params, L_RATE, momentum=CONFIG['momentum'])
+    elif CONFIG['optim'] == 'Adam':
+        optimizer = optim.Adam(params, L_RATE)
 
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
     # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
@@ -110,8 +113,10 @@ if __name__ == '__main__':
             record[record_name]['top3_prf1'] = {k: v.item() for k, v in test_top3_prf1.items()}
             record[record_name]['top10_prf1'] = {k: v.item() for k, v in test_top10_prf1.items()}
 
-        writer.add_scalar('test_miap', record['test']['miap'] * 100, epoch)
-        writer.add_scalar('test_g_miap', record['test_g']['miap'] * 100, epoch)
+        text = '| conv | general|\n| :----: | :----: |\n' + \
+            '{:.2f}'.format(record['test']['miap'] * 100) + ' | ' + \
+            '{:.2f}'.format(record['test_g']['miap'] * 100) + ' | ' + '\n'
+        writer.add_text('miap', text, epoch)
 
         text = utils.write_table({'top3': record['test']['top3_prf1'], 'top10': record['test']['top10_prf1']})
         writer.add_text('Test Table', text, epoch)
