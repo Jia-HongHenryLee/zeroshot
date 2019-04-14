@@ -67,18 +67,16 @@ if __name__ == '__main__':
 
     # optim setting
     params = model.classifier.parameters() if CONFIG['freeze'] else model.parameters()
+
     if CONFIG['optim'] == 'SGD':
         optimizer = optim.SGD(params, L_RATE, momentum=CONFIG['momentum'])
+
     elif CONFIG['optim'] == 'Adam':
         optimizer = optim.Adam(params, L_RATE)
 
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
-    # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
-    # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1, 8], gamma=0.1)
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)
 
     for epoch in range(CONFIG['start_epoch'], CONFIG['end_epoch']):
-
-        scheduler.step()
 
         # training
         train_metrics = model_epoch(loss_name="train", mode="train", epoch=epoch,
@@ -92,6 +90,8 @@ if __name__ == '__main__':
             record_name = 'train_g' if g else 'train'
             train_iaps, train_miap = utils.cal_miap(train_metrics, g)
             writer.add_scalar(record_name + '_miap', train_miap * 100, epoch)
+
+        scheduler.step()
 
         ######################################################################################
 

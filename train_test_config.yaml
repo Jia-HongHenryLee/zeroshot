@@ -1,4 +1,4 @@
-exp_name: traintest_sgd
+exp_name: traintest_sgd_k20
 
 dataset: nus_wide
 concepts: vec
@@ -6,13 +6,13 @@ freeze: True
 
 sample: 100
 start_epoch: 1
-end_epoch: 15
+end_epoch: 20
 
 l_rate: 1e-4
 optim: SGD
 momentum: 0.9
 
-k: 100
+k: 20
 d: 300
 
 train_batch_size: 512

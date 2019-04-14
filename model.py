@@ -40,7 +40,14 @@ class RESNET(nn.Module):
         if freeze:
             for param in self.features.parameters():
                 param.requires_grad = False
-        self.classifier = nn.Sequential(nn.Linear(2048, k * d))
+        self.classifier = nn.Sequential(
+            nn.Linear(2048, 4096),
+            nn.Linear(4096, 8096),
+            nn.ReLU(),
+            nn.Linear(8096, 2048),
+            nn.ReLU(),
+            nn.Dropout(p=0.3),
+            nn.Linear(2048, k * d))
 
     def forward(self, x):
         x = self.features(x)
@@ -154,6 +161,8 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
 
         for p_rank, gts in zip(p_ranks, batch_label):
             gts = gts[concepts[loss_name]['concept_label']]
+            if sum(gts) == 0:
+                continue
             tmp_metric['predicts_zsl'].append(np.array(p_rank.tolist()))
             tmp_metric['gts_zsl'].append(np.array(gts.tolist()))
             metrics['predicts_zsl'].append(np.array(p_rank.tolist()))
@@ -166,7 +175,7 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
 
         for g_rank, g_gts in zip(g_ranks, batch_label):
             tmp_metric['predicts_gzsl'].append(np.array(g_rank.tolist()))
-            tmp_metric['gts_gzsl'].append(np.array(gts.tolist()))
+            tmp_metric['gts_gzsl'].append(np.array(g_gts.tolist()))
             metrics['predicts_gzsl'].append(np.array(g_rank.tolist()))
             metrics['gts_gzsl'].append(np.array(g_gts.tolist()))
 

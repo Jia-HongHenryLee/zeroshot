@@ -1,4 +1,6 @@
 import numpy as np
+from sklearn.metrics import precision_score
+from sklearn.metrics import label_ranking_average_precision_score
 
 
 def cal_miap(metric, general=False):
@@ -8,7 +10,6 @@ def cal_miap(metric, general=False):
 
     iAPs = []
     for predict, gt in zip(predicts, gts):
-
         gt = np.where(gt == 1)[0]
         predict_list = np.argsort(predict)
 
@@ -18,6 +19,7 @@ def cal_miap(metric, general=False):
 
         iap = sum(scores) / (len(scores) + np.finfo(float).eps)
         iAPs.append(iap)
+
     miAP = np.mean(iAPs)
 
     return iAPs, miAP
@@ -27,13 +29,14 @@ def bool_arr(predicts, top_num):
     predicts = np.asarray(predicts)
     top = np.zeros(predicts.shape)
     x_ind = np.array([[i] * top_num for i in range(predicts.shape[0])]).reshape(-1)
-    y_ind = np.argsort(-predicts, axis=1)[:, :top_num].reshape(-1)
+    y_ind = np.argsort(predicts, axis=1)[:, :top_num].reshape(-1)
     top[[x_ind, y_ind]] = 1
     return top
 
 
 def cal_prf1(tops, gts):
     gts = np.asarray(gts)
+
     tp_per_class = np.logical_and(tops, gts).sum(axis=0)
     p_per_class = tops.sum(axis=0)
     g_per_class = gts.sum(axis=0)
