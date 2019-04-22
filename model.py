@@ -21,13 +21,13 @@ class VGG(nn.Module):
         if freeze:
             for param in self.features.parameters():
                 param.requires_grad = False
-        self.classifier = nn.Sequential(*list(model.classifier.children())[:4])
-        self.classifier._modules['3'] = nn.Linear(4096, kwarg['k'] * kwarg['d'])
+        self.transform = nn.Sequential(*list(model.classifier.children())[:4])
+        self.transform._modules['3'] = nn.Linear(4096, kwarg['k'] * kwarg['d'])
 
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
+        x = self.transform(x)
         return x
 
 
@@ -40,19 +40,16 @@ class RESNET(nn.Module):
         if freeze:
             for param in self.features.parameters():
                 param.requires_grad = False
-        self.classifier = nn.Sequential(
-            nn.Linear(2048, 4096),
-            nn.Linear(4096, 8096),
+        self.transform = nn.Sequential(
+            nn.Linear(2048, 1024),
             nn.ReLU(),
-            nn.Linear(8096, 2048),
-            nn.ReLU(),
-            nn.Dropout(p=0.3),
-            nn.Linear(2048, k * d))
+            nn.Dropout(),
+            nn.Linear(1024, k * d))
 
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
-        x = self.classifier(x)
+        x = self.transform(x)
         return x
 
 
@@ -186,7 +183,7 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
         running_loss = 0.0
 
         # record miap
-        writer.add_scalar(loss_name + 'tmp_miap', utils.cal_miap(tmp_metric)[1], batch_i + (epoch - 1) * len(data_loader))
-        writer.add_scalar(loss_name + 'tmp_g_miap', utils.cal_miap(tmp_metric, True)[1], batch_i + (epoch - 1) * len(data_loader))
+        writer.add_scalar(loss_name + 'tmp_miap', utils.cal_miap(tmp_metric), batch_i + (epoch - 1) * len(data_loader))
+        writer.add_scalar(loss_name + 'tmp_g_miap', utils.cal_miap(tmp_metric, True), batch_i + (epoch - 1) * len(data_loader))
 
     return metrics

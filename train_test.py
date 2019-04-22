@@ -11,6 +11,7 @@ import utils
 import numpy as np
 from os.path import join as PJ
 import yaml
+import json
 from tensorboardX import SummaryWriter
 
 global DEVICE
@@ -66,7 +67,7 @@ if __name__ == '__main__':
     writer = SummaryWriter(PJ(SAVE_PATH))
 
     # optim setting
-    params = model.classifier.parameters() if CONFIG['freeze'] else model.parameters()
+    params = model.transform.parameters() if CONFIG['freeze'] else model.parameters()
 
     if CONFIG['optim'] == 'SGD':
         optimizer = optim.SGD(params, L_RATE, momentum=CONFIG['momentum'])
@@ -74,7 +75,7 @@ if __name__ == '__main__':
     elif CONFIG['optim'] == 'Adam':
         optimizer = optim.Adam(params, L_RATE)
 
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
 
     for epoch in range(CONFIG['start_epoch'], CONFIG['end_epoch']):
 
@@ -88,7 +89,7 @@ if __name__ == '__main__':
 
         for g in [False, True]:
             record_name = 'train_g' if g else 'train'
-            train_iaps, train_miap = utils.cal_miap(train_metrics, g)
+            train_miap = utils.cal_miap(train_metrics, g)
             writer.add_scalar(record_name + '_miap', train_miap * 100, epoch)
 
         scheduler.step()
@@ -96,8 +97,8 @@ if __name__ == '__main__':
         ######################################################################################
 
         # test
-        record = {'test': {'miap': 0.0, 'iaps': None, 'top3_prf1': None, 'top10_prf1': None},
-                  'test_g': {'miap': 0.0, 'iaps': None, 'top3_prf1': None, 'top10_prf1': None}}
+        record = {'test': {'miap': 0.0, 'top3_prf1': None, 'top10_prf1': None},
+                  'test_g': {'miap': 0.0, 'top3_prf1': None, 'top10_prf1': None}}
 
         test_metric = model_epoch(mode="test", epoch=epoch, loss_name='test',
                                   model=model, k=CONFIG['k'], d=CONFIG['d'], sample_rate=CONFIG['sample'],
@@ -105,11 +106,10 @@ if __name__ == '__main__':
                                   optimizer=optimizer, writer=writer)
 
         for g in [False, True]:
-            test_iaps, test_miap = utils.cal_miap(test_metric, general=g)
+            test_miap = utils.cal_miap(test_metric, general=g)
             test_top3_prf1, test_top10_prf1 = utils.cal_top(test_metric, general=g)
             record_name = 'test_g' if g else 'test'
             record[record_name]['miap'] = test_miap.item()
-            record[record_name]['iaps'] = [i.item() for i in test_iaps]
             record[record_name]['top3_prf1'] = {k: v.item() for k, v in test_top3_prf1.items()}
             record[record_name]['top10_prf1'] = {k: v.item() for k, v in test_top10_prf1.items()}
 
@@ -117,13 +117,14 @@ if __name__ == '__main__':
             '{:.2f}'.format(record['test']['miap'] * 100) + ' | ' + \
             '{:.2f}'.format(record['test_g']['miap'] * 100) + ' | ' + '\n'
         writer.add_text('miap', text, epoch)
+        writer.add_scalar('test_miap', utils.cal_miap(test_metric), epoch)
+        writer.add_scalar('test_g_miap', utils.cal_miap(test_metric, True), epoch)
 
-        text = utils.write_table({'top3': record['test']['top3_prf1'], 'top10': record['test']['top10_prf1']})
+        text = utils.write_table({'top3': record['test']['top3_prf1'], 'top10': record['test_g']['top10_prf1']})
         writer.add_text('Test Table', text, epoch)
-
-        text = utils.write_table({'top3': record['test_g']['top3_prf1'], 'top10': record['test_g']['top10_prf1']})
-        writer.add_text('Test_g Table', text, epoch)
+        writer.add_scalar('top3_of', record['test']['top3_prf1']['o_f1'] * 100, epoch)
+        writer.add_scalar('top10_of', record['test_g']['top10_prf1']['o_f1'] * 100, epoch)
 
         ######################################################################################
         with open(PJ(SAVE_PATH, "test_table.txt"), "a+") as f:
-            table = yaml.dump({str(epoch): record}, f)
+            table = json.dump({str(epoch): record}, f)

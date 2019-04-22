@@ -1,4 +1,4 @@
-exp_name: traintest_sgd_k20
+exp_name: traintest_two_layer_
 
 dataset: nus_wide
 concepts: vec
@@ -8,7 +8,7 @@ sample: 100
 start_epoch: 1
 end_epoch: 20
 
-l_rate: 1e-4
+l_rate: 5e-5
 optim: SGD
 momentum: 0.9
 

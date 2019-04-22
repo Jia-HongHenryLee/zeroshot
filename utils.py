@@ -22,7 +22,7 @@ def cal_miap(metric, general=False):
 
     miAP = np.mean(iAPs)
 
-    return iAPs, miAP
+    return miAP
 
 
 def bool_arr(predicts, top_num):
@@ -57,9 +57,9 @@ def cal_top(metric, general=False):
     gts = metric['gts_gzsl'] if general else metric['gts_zsl']
 
     top3_prf1 = cal_prf1(bool_arr(predicts, 3), gts)
-    top5_prf1 = cal_prf1(bool_arr(predicts, 10), gts)
+    top10_prf1 = cal_prf1(bool_arr(predicts, 10), gts)
 
-    return top3_prf1, top5_prf1
+    return top3_prf1, top10_prf1
 
 
 def write_table(prf1_dict):

@@ -6,8 +6,9 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
+import os
 from os.path import join as PJ
-import random
+import numpy as np
 import yaml
 
 
@@ -20,30 +21,21 @@ def ConceptSets(state, concepts):
     def _concept_split():
         if state['mode'] == "train_val":
             # load origin train_id
-            ids = yaml.load(open(PJ(data_dir, 'train_test', 'id_split' + '.txt')))
-            ids = ids['train_id']
+            data = pd.read_csv(PJ(data_dir, "train_test", "train.txt"), header=None)
+            train_path = PJ(data_dir, "train_val", "train.txt")
+            val_path = PJ(data_dir, "train_val", "val.txt")
 
-            # random generate id_split
-            val_nums = {'apy': 5, 'awa2': 13, 'cub': 50, 'sun': 65}
-            val_num = val_nums[state['dataset']]
-            random.shuffle(ids)
+            if not (os.path.exists(train_path) and os.path.exists(val_path)):
 
-            id_split = {'train_id': sorted(ids[val_num:]), 'test_id': sorted(ids[:val_num])}
-            print(id_split['train_id'])
-            print(id_split['test_id'])
+                msk = np.random.rand(len(data)) < 0.8
 
-            # produce split data file
-            data = pd.read_csv(PJ(data_dir, "train_val", "trainval.txt"), header=None)
+                train_data = data[msk]
+                train_data.to_csv(train_path, index=False, header=False)
 
-            train_data = data[data.iloc[:, 1].isin(id_split['train_id'])]
-            train_data.to_csv(PJ(data_dir, "train_val", "train.txt"), index=False, header=False)
+                val_data = data[~msk]
+                val_data.to_csv(val_path, index=False, header=False)
 
-            test_data = data[data.iloc[:, 1].isin(id_split['test_id'])]
-            test_data.to_csv(PJ(data_dir, "train_val", "val.txt"), index=False, header=False)
-
-            return id_split
-        else:
-            return yaml.load(open(PJ(data_dir, state['mode'], 'id_split' + '.txt')))
+        return yaml.load(open(PJ(data_dir, "train_test", 'id_split' + '.txt')))
 
     def _concept(split_mode, concept_split):
 

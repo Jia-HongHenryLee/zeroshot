@@ -11,21 +11,29 @@ DATASET = "nus_wide"
 
 ROOT = PJ("..", "dataset")
 ORIGIN = PJ(ROOT, DATASET, "0origin")
+new_concept = "glove"
+word2vec_path = PJ(ROOT, "glove", "glove.6B.300d.txt")
+# word2vec_path = PJ(ROOT, "google_news", "GoogleNews-vectors-gensim-normed.bin")
 
 # replace word
-
 REPLACE = {
-    "colour": "Color",
-    "colours": "Colors",
-    "colourful": "Colorful",
-    "grey": "Grey",
-    "olympus": "Olympus",
-    "harbour": "Harbour",
-    "nederland": "Nederland",
-    "maldives": "Maldives",
-    "oahu": "Oahu",
-    "kauai": "Kauai"
+    "vec": {
+        "colour": "Color",
+        "colours": "Colors",
+        "colourful": "Colorful",
+        "grey": "Grey",
+        "olympus": "Olympus",
+        "harbour": "Harbour",
+        "nederland": "Nederland",
+        "maldives": "Maldives",
+        "oahu": "Oahu",
+        "kauai": "Kauai"
+    },
+    "glove": {
+        "interestingness": "interest"
+    }
 }
+
 
 ################################
 # check path exist
@@ -83,24 +91,29 @@ with open(PJ(SPLIT_LIST, "id_split.txt"), "w") as f:
 ################################
 
 # load word2vec model
-weight_path = PJ(ROOT, "google_news", "GoogleNews-vectors-gensim-normed.bin")
-word2vec = KeyedVectors.load(weight_path, mmap='r')
+if new_concept == "glove":
+    word2vec = KeyedVectors.load_word2vec_format(word2vec_path, binary=False)
+    word2vec.init_sims(replace=True)
+elif new_concept == "vec":
+    word2vec = KeyedVectors.load(word2vec_path, mmap='r')
+
 word2vec.wv.vectors_norm = word2vec.wv.vectors
 
 # check word2vec
 print("check word embedding")
-for i, w in enumerate(wordlists['train']):
-    if w in REPLACE:
-        wordlists['train'][i] = REPLACE[w]
-    if w not in word2vec.wv.vocab and w not in REPLACE:
-        print('"' + w + '":"' + w.capitalize() + '"')
+for l in lists:
+    for i, w in enumerate(wordlists[l]):
+        if w in REPLACE[new_concept]:
+            wordlists[l][i] = REPLACE[new_concept][w]
+        if w not in word2vec.wv.vocab and w not in REPLACE[new_concept]:
+            print('"' + w + '":"' + w.capitalize() + '"')
 
 # output vector file
 print("output word embedding file")
 word_vec_dict = {}
 for l in lists:
     word_vec_dict.update({w: word2vec[w] for w in wordlists[l]})
-filename = PJ(CONCEPT_LIST, "concepts_vec.txt")
+filename = PJ(CONCEPT_LIST, "concepts_" + new_concept + ".txt")
 pd.DataFrame.from_dict(word_vec_dict).to_csv(filename, index=False)
 
 ################################
