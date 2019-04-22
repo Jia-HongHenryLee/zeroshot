@@ -4,7 +4,7 @@ from data_loader import ClassDatasets, ConceptSets
 from torch.utils.data import DataLoader
 
 import torch.optim as optim
-from model import RESNET, model_epoch
+from model import RESNET_nonlinear, model_epoch
 
 import utils
 
@@ -37,12 +37,13 @@ if __name__ == '__main__':
 
     # build model
     if LOAD_MODEL is None:
-        model = RESNET(freeze=CONFIG['freeze'], pretrained=True, k=CONFIG['k'], d=CONFIG['d'])
+        model = RESNET_nonlinear(freeze=CONFIG['freeze'], pretrained=True,
+                                 k1=CONFIG['k1'], k2=CONFIG['k2'], d=CONFIG['d'])
         model = model.to(DEVICE)
 
     else:
         print("Loading pretrained model")
-        model = RESNET(freeze=True, pretrained=False, k=CONFIG['k'], d=CONFIG['d'])
+        model = RESNET_nonlinear(freeze=True, pretrained=False, k=CONFIG['k'], d=CONFIG['d'])
         model.load_state_dict(torch.load(LOAD_MODEL))
         model = model.to(DEVICE)
 
@@ -81,7 +82,7 @@ if __name__ == '__main__':
 
         # training
         train_metrics = model_epoch(loss_name="train", mode="train", epoch=epoch,
-                                    model=model, k=CONFIG['k'], d=CONFIG['d'], sample_rate=CONFIG['sample'],
+                                    model=model, sample_rate=CONFIG['sample'],
                                     data_loader=train_loader, concepts=concepts,
                                     optimizer=optimizer, writer=writer)
 
@@ -101,7 +102,7 @@ if __name__ == '__main__':
                   'test_g': {'miap': 0.0, 'top3_prf1': None, 'top10_prf1': None}}
 
         test_metric = model_epoch(mode="test", epoch=epoch, loss_name='test',
-                                  model=model, k=CONFIG['k'], d=CONFIG['d'], sample_rate=CONFIG['sample'],
+                                  model=model, sample_rate=CONFIG['sample'],
                                   data_loader=test_loader, concepts=concepts,
                                   optimizer=optimizer, writer=writer)
 

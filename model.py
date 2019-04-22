@@ -31,10 +31,14 @@ class VGG(nn.Module):
         return x
 
 
-class RESNET(nn.Module):
+class RESNET_nonlinear(nn.Module):
 
-    def __init__(self, freeze=True, pretrained=True, k=100, d=300):
-        super(RESNET, self).__init__()
+    def __init__(self, freeze=True, pretrained=True, k1=90, k2=20, d=300):
+        super(RESNET_nonlinear, self).__init__()
+        self.k1 = k1
+        self.k2 = k2
+        self.d = d
+
         model = resnet152(pretrained=pretrained)
         self.features = nn.Sequential(*list(model.children())[:-1])
         if freeze:
@@ -44,24 +48,24 @@ class RESNET(nn.Module):
             nn.Linear(2048, 1024),
             nn.ReLU(),
             nn.Dropout(),
-            nn.Linear(1024, k * d))
+            nn.Linear(1024, self.d * self.k1 + self.k1 * self.k2))
 
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
         x = self.transform(x)
+        x = x.view(-1, self.d * self.k1 + self.k1 * self.k2)
         return x
 
 
-def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, concepts, optimizer, writer):
+def model_epoch(mode, epoch, loss_name, model, sample_rate, data_loader, concepts, optimizer, writer):
 
     # loss_function
     class HingeRankLoss():
 
-        def __init__(self, concept, k, d):
+        def __init__(self, concept, model_args):
             self.concept = concept
-            self.k = k
-            self.d = d
+            self.model_args = model_args
             self.sample_rate = sample_rate
 
         def _loss(self, outputs=None, labels=None, mode="train"):
@@ -69,12 +73,18 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
             self.labels = labels
             self.mode = mode
 
+            self.inner_matrixs = self.outputs[:, :model_args['d'] * model_args['k1']]
+            self.inner_matrixs = self.inner_matrixs.view(-1, model_args['k1'], model_args['d'])
+
+            self.outer_matrixs = self.outputs[:, model_args['d'] * model_args['k1']:]
+            self.outer_matrixs = self.outer_matrixs.view(-1, model_args['k2'], model_args['k1'])
+
             if self.mode == "train":
                 self.loss = Variable(torch.cuda.FloatTensor([0.0]), requires_grad=True)
             else:
                 self.loss = Variable(torch.cuda.FloatTensor([0.0]), requires_grad=False)
 
-            for output, label in zip(self.outputs, self.labels):
+            for outer_m, inner_m, label in zip(self.outer_matrixs, self.inner_matrixs, self.labels):
 
                 label = label[self.concept['concept_label']]
 
@@ -90,8 +100,11 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
                 if p_vectors.nelement() == 0:
                     continue
 
-                p_trans = torch.mm(output, p_vectors.t()).norm(p=2, dim=0)
-                n_trans = torch.mm(output, n_vectors.t()).norm(p=2, dim=0)
+                p_trans = torch.tanh(torch.mm(inner_m, p_vectors.t()))
+                p_trans = torch.mm(outer_m, p_trans).norm(p=2, dim=0)
+
+                n_trans = torch.tanh(torch.mm(inner_m, n_vectors.t()))
+                n_trans = torch.mm(outer_m, n_trans).norm(p=2, dim=0)
 
                 subloss = torch.sum(torch.stack([torch.exp(p - n) for n in n_trans for p in p_trans]))
                 subloss = torch.cuda.FloatTensor([1.0]) + subloss.clone()
@@ -114,7 +127,8 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
     else:
         assert "Mode Error"
 
-    criterion = HingeRankLoss(concepts[loss_name], k, d)
+    model_args = {'k1': model.k1, 'k2': model.k2, 'd': model.d}
+    criterion = HingeRankLoss(concepts[loss_name], model_args)
 
     metrics = {
         'predicts_zsl': deque(),
@@ -133,7 +147,9 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
         batch_img = batch_data['image'].to(DEVICE)
         batch_label = batch_data['label'].to(DEVICE)
 
-        outputs = model(Variable(batch_img)).view(-1, k, d)
+        outputs = model(Variable(batch_img))
+        inner_m = outputs[:, :model.d * model.k1].view(-1, model.k1, model.d)
+        outer_m = outputs[:, model.d * model.k1:].view(-1, model.k2, model.k1)
 
         loss = criterion._loss(outputs=outputs, labels=batch_label, mode=mode)
 
@@ -153,8 +169,9 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
 
         # predict
         concept_vectors = concepts[loss_name]['concept_vector'].t()
-        concept_vectors = concept_vectors.expand(outputs.shape[0], d, -1)
-        p_ranks = torch.bmm(outputs, concept_vectors).norm(p=2, dim=1)
+        concept_vectors = concept_vectors.expand(outputs.shape[0], model.d, -1)
+        p_ranks = torch.tanh(torch.bmm(inner_m, concept_vectors))
+        p_ranks = torch.bmm(outer_m, p_ranks).norm(p=2, dim=1)
 
         for p_rank, gts in zip(p_ranks, batch_label):
             gts = gts[concepts[loss_name]['concept_label']]
@@ -167,8 +184,9 @@ def model_epoch(mode, epoch, loss_name, model, k, d, sample_rate, data_loader, c
 
         # general
         concept_vectors_g = concepts['general']['concept_vector'].t()
-        concept_vectors_g = concept_vectors_g.expand(outputs.shape[0], d, -1)
-        g_ranks = torch.bmm(outputs, concept_vectors_g).norm(p=2, dim=1)
+        concept_vectors_g = concept_vectors_g.expand(outputs.shape[0], model.d, -1)
+        g_ranks = torch.tanh(torch.bmm(inner_m, concept_vectors_g))
+        g_ranks = torch.bmm(outer_m, g_ranks).norm(p=2, dim=1)
 
         for g_rank, g_gts in zip(g_ranks, batch_label):
             tmp_metric['predicts_gzsl'].append(np.array(g_rank.tolist()))

@@ -1,4 +1,4 @@
-exp_name: traintest_two_layer_
+exp_name: traintest_two_layer_nonlinear
 
 dataset: nus_wide
 concepts: vec
@@ -8,11 +8,12 @@ sample: 100
 start_epoch: 1
 end_epoch: 20
 
-l_rate: 5e-5
+l_rate: 1e-4
 optim: SGD
 momentum: 0.9
 
-k: 20
+k1: 90
+k2: 20
 d: 300
 
 train_batch_size: 512
