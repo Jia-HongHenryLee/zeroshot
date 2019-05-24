@@ -1,6 +1,6 @@
 import numpy as np
-from sklearn.metrics import precision_score
-from sklearn.metrics import label_ranking_average_precision_score
+from graphviz import Digraph
+import torch
 
 
 def cal_miap(metric, general=False):
@@ -9,12 +9,16 @@ def cal_miap(metric, general=False):
     gts = metric['gts_gzsl'] if general else metric['gts_zsl']
 
     iAPs = []
-    for predict, gt in zip(predicts, gts):
+    for predict, gt in zip(np.asarray(predicts), np.asarray(gts)):
+
+        predict = predict.reshape(-1)
+        gt = gt.reshape(-1)
+
         gt = np.where(gt == 1)[0]
-        predict_list = np.argsort(predict)
+        predict_list = np.argsort(-predict)
 
         idx = np.array(sorted([np.nonzero(predict_list == g)[0][0] + 1 for g in gt]))
-        num_hits = np.cumsum([1 for p in np.argsort(predict) if p in gt])
+        num_hits = np.cumsum([1 for p in np.argsort(-predict) if p in gt])
         scores = num_hits / idx
 
         iap = sum(scores) / (len(scores) + np.finfo(float).eps)
@@ -25,16 +29,12 @@ def cal_miap(metric, general=False):
     return miAP
 
 
-def bool_arr(predicts, top_num):
-    predicts = np.asarray(predicts)
-    top = np.zeros(predicts.shape)
-    x_ind = np.array([[i] * top_num for i in range(predicts.shape[0])]).reshape(-1)
-    y_ind = np.argsort(predicts, axis=1)[:, :top_num].reshape(-1)
-    top[[x_ind, y_ind]] = 1
-    return top
+def cal_prf1(metric, general=False):
 
+    predicts = metric['predicts_gzsl'] if general else metric['predicts_zsl']
+    gts = metric['gts_gzsl'] if general else metric['gts_zsl']
 
-def cal_prf1(tops, gts):
+    tops = np.asarray(predicts)
     gts = np.asarray(gts)
 
     tp_per_class = np.logical_and(tops, gts).sum(axis=0)
@@ -42,7 +42,7 @@ def cal_prf1(tops, gts):
     g_per_class = gts.sum(axis=0)
 
     c_p = np.nan_to_num(tp_per_class / p_per_class).sum() / tp_per_class.shape[0]
-    c_r = np.nan_to_num(tp_per_class / g_per_class).sum() / tp_per_class.shape[0]
+    c_r = np.nan_to_num(tp_per_class / (g_per_class)).sum() / tp_per_class.shape[0]
     c_f1 = np.nan_to_num(2 * c_p * c_r / (c_p + c_r))
 
     o_p = np.nan_to_num(tp_per_class.sum() / p_per_class.sum())
@@ -50,16 +50,6 @@ def cal_prf1(tops, gts):
     o_f1 = np.nan_to_num(2 * o_p * o_r / (o_p + o_r))
 
     return {'c_p': c_p, 'c_r': c_r, 'c_f1': c_f1, 'o_p': o_p, 'o_r': o_r, 'o_f1': o_f1}
-
-
-def cal_top(metric, general=False):
-    predicts = metric['predicts_gzsl'] if general else metric['predicts_zsl']
-    gts = metric['gts_gzsl'] if general else metric['gts_zsl']
-
-    top3_prf1 = cal_prf1(bool_arr(predicts, 3), gts)
-    top10_prf1 = cal_prf1(bool_arr(predicts, 10), gts)
-
-    return top3_prf1, top10_prf1
 
 
 def write_table(prf1_dict):

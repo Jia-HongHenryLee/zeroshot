@@ -1,20 +1,22 @@
-exp_name: traintest_two_layer_nonlinear
+exp_name: traintest_adaptive_twolayer_adaptive_weight_linear_bias_40_threshold_0.5_tanh_focal
 
-dataset: nus_wide
-concepts: vec
-freeze: True
+dataset: apy
+concepts: attr
 
-sample: 100
 start_epoch: 1
-end_epoch: 20
+end_epoch: 15
 
 l_rate: 1e-4
-optim: SGD
+optim: Adam
 momentum: 0.9
 
-k1: 90
-k2: 20
+loss_args:
+  alpha: 1
+  gamma: 2
+  threshold: 0.5
+
+k: 40
 d: 300
 
-train_batch_size: 512
-test_batch_size: 512
+train_batch_size: 600
+test_batch_size: 600

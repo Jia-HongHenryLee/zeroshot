@@ -2,114 +2,95 @@ import utils
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
+import torch.nn.functional as F
+
 import numpy as np
 from collections import deque
 from torchvision.models import vgg16_bn as vgg16_bn
 from torchvision.models import resnet101 as resnet101
 from torchvision.models import resnet152 as resnet152
 
+from torchviz import make_dot
+
 global DEVICE
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class VGG(nn.Module):
+class visual_semantic_model(nn.Module):
 
-    def __init__(self, freeze=True, pretrained=True, **kwarg):
-        super(VGG, self).__init__()
-        model = vgg16_bn(pretrained=pretrained)
-        self.features = nn.Sequential(*list(model.features.children()))
-        if freeze:
-            for param in self.features.parameters():
-                param.requires_grad = False
-        self.transform = nn.Sequential(*list(model.classifier.children())[:4])
-        self.transform._modules['3'] = nn.Linear(4096, kwarg['k'] * kwarg['d'])
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.transform(x)
-        return x
-
-
-class RESNET_nonlinear(nn.Module):
-
-    def __init__(self, freeze=True, pretrained=True, k1=90, k2=20, d=300):
-        super(RESNET_nonlinear, self).__init__()
-        self.k1 = k1
-        self.k2 = k2
+    def __init__(self, pretrained=True, k=20, d=300):
+        super(visual_semantic_model, self).__init__()
+        self.k = k
         self.d = d
+        self.non_linear_param = 0 if self.k == 1 else self.k + 1
+        self.output_num = self.non_linear_param + self.k * (self.d + 1)
 
-        model = resnet152(pretrained=pretrained)
-        self.features = nn.Sequential(*list(model.children())[:-1])
-        if freeze:
-            for param in self.features.parameters():
-                param.requires_grad = False
+        resnet = resnet152(pretrained=pretrained)
+        self.features = nn.Sequential(*list(resnet.children())[:-1])
+        for param in self.features.parameters():
+            param.requires_grad = False
+
         self.transform = nn.Sequential(
+            nn.Dropout(),
             nn.Linear(2048, 1024),
             nn.ReLU(),
             nn.Dropout(),
-            nn.Linear(1024, self.d * self.k1 + self.k1 * self.k2))
+            nn.Linear(1024, self.output_num))
 
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.transform(x)
-        x = x.view(-1, self.d * self.k1 + self.k1 * self.k2)
-        return x
+    def forward(self, visual, semantics):
+        visual_feature = self.features(visual)
+        visual_feature = visual_feature.view(visual_feature.size(0), -1)
+
+        visual_matrix = self.transform(visual_feature)
+
+        semantics = semantics.t()
+        semantics = semantics.expand(visual_matrix.shape[0], self.d, -1)
+
+        if self.non_linear_param == 0:
+            matrix = visual_matrix[..., :-1].view(-1, self.k, self.d)
+            bias = visual_matrix[..., -1].view(-1, self.k)[..., None]
+            semantic_transforms = torch.matmul(matrix, semantics) + bias
+
+        else:
+            visual_outer = visual_matrix[..., :self.non_linear_param]
+            visual_inner = visual_matrix[..., self.non_linear_param:]
+
+            visual_outer_matrix = visual_outer[..., :-1].view(-1, 1, self.k)
+            visual_outer_bias = visual_outer[..., -1].view(-1, 1)[..., None]
+
+            visual_inner_matrix = visual_inner[..., :-self.k].view(-1, self.k, self.d)
+            visual_inner_bias = visual_inner[..., -self.k:].view(-1, self.k)[..., None]
+
+            semantic_transforms = torch.matmul(visual_inner_matrix, semantics) + visual_inner_bias
+            semantic_transforms = torch.tanh(semantic_transforms)
+            semantic_transforms = torch.matmul(visual_outer_matrix, semantic_transforms) + visual_outer_bias
+
+        semantic_transforms = semantic_transforms.transpose(1, 2).contiguous()
+        semantic_transforms = torch.sigmoid(semantic_transforms)
+
+        return semantic_transforms
 
 
-def model_epoch(mode, epoch, loss_name, model, sample_rate, data_loader, concepts, optimizer, writer):
+def model_epoch(mode, epoch, loss_name, model, loss_args, data_loader, concepts, optimizer, writer):
 
     # loss_function
     class HingeRankLoss():
 
-        def __init__(self, concept, model_args):
+        def __init__(self, concept, loss_args):
             self.concept = concept
-            self.model_args = model_args
-            self.sample_rate = sample_rate
+            self.alpha = torch.cuda.FloatTensor([1 - loss_args['alpha'], loss_args['alpha']])
+            self.gamma = loss_args['gamma']
 
-        def _loss(self, outputs=None, labels=None, mode="train"):
+        def _loss(self, outputs=None, semantics=None, labels=None, mode="train"):
             self.outputs = outputs
-            self.labels = labels
+            self.labels = labels[:, self.concept['concept_label']][..., None]
             self.mode = mode
 
-            self.inner_matrixs = self.outputs[:, :model_args['d'] * model_args['k1']]
-            self.inner_matrixs = self.inner_matrixs.view(-1, model_args['k1'], model_args['d'])
+            bce_loss = F.binary_cross_entropy(self.outputs, self.labels, reduction='none').view(-1)
+            pt = Variable((-bce_loss).data.exp())
+            at = self.alpha.data.gather(0, self.labels.type(torch.cuda.LongTensor).data.view(-1))
 
-            self.outer_matrixs = self.outputs[:, model_args['d'] * model_args['k1']:]
-            self.outer_matrixs = self.outer_matrixs.view(-1, model_args['k2'], model_args['k1'])
-
-            if self.mode == "train":
-                self.loss = Variable(torch.cuda.FloatTensor([0.0]), requires_grad=True)
-            else:
-                self.loss = Variable(torch.cuda.FloatTensor([0.0]), requires_grad=False)
-
-            for outer_m, inner_m, label in zip(self.outer_matrixs, self.inner_matrixs, self.labels):
-
-                label = label[self.concept['concept_label']]
-
-                pos_inds = (label == 1).nonzero().reshape(-1).tolist()
-                neg_inds = (label == 0).nonzero().reshape(-1).tolist()
-
-                if sample_rate > 0 and self.mode == 'train':
-                    neg_inds = np.random.choice(neg_inds, sample_rate, replace=False)
-
-                p_vectors = self.concept['concept_vector'][pos_inds]
-                n_vectors = self.concept['concept_vector'][neg_inds]
-
-                if p_vectors.nelement() == 0:
-                    continue
-
-                p_trans = torch.tanh(torch.mm(inner_m, p_vectors.t()))
-                p_trans = torch.mm(outer_m, p_trans).norm(p=2, dim=0)
-
-                n_trans = torch.tanh(torch.mm(inner_m, n_vectors.t()))
-                n_trans = torch.mm(outer_m, n_trans).norm(p=2, dim=0)
-
-                subloss = torch.sum(torch.stack([torch.exp(p - n) for n in n_trans for p in p_trans]))
-                subloss = torch.cuda.FloatTensor([1.0]) + subloss.clone()
-
-                self.loss = self.loss.clone() + torch.log(subloss)
+            self.loss = torch.mean(Variable(at) * (1 - pt) ** self.gamma * bce_loss)
 
             return self.loss
 
@@ -127,8 +108,7 @@ def model_epoch(mode, epoch, loss_name, model, sample_rate, data_loader, concept
     else:
         assert "Mode Error"
 
-    model_args = {'k1': model.k1, 'k2': model.k2, 'd': model.d}
-    criterion = HingeRankLoss(concepts[loss_name], model_args)
+    criterion = HingeRankLoss(concepts[loss_name], loss_args)
 
     metrics = {
         'predicts_zsl': deque(),
@@ -141,67 +121,64 @@ def model_epoch(mode, epoch, loss_name, model, sample_rate, data_loader, concept
 
     for batch_i, batch_data in enumerate(data_loader, 1):
 
+        # tmp_metrics = {
+        #     'predicts_zsl': deque(),
+        #     'predicts_gzsl': deque(),
+        #     'gts_zsl': deque(),
+        #     'gts_gzsl': deque()
+        # }
+
         if mode == 'train':
             optimizer.zero_grad()
 
         batch_img = batch_data['image'].to(DEVICE)
         batch_label = batch_data['label'].to(DEVICE)
 
-        outputs = model(Variable(batch_img))
-        inner_m = outputs[:, :model.d * model.k1].view(-1, model.k1, model.d)
-        outer_m = outputs[:, model.d * model.k1:].view(-1, model.k2, model.k1)
-
-        loss = criterion._loss(outputs=outputs, labels=batch_label, mode=mode)
+        concept_vectors = concepts[loss_name]['concept_vector']
+        outputs = model(Variable(batch_img), concept_vectors)
 
         if mode == 'train':
+            loss = criterion._loss(outputs=outputs, semantics=concept_vectors, labels=batch_label, mode=mode)
             loss.backward()
             optimizer.step()
 
-        running_loss += loss.item() / batch_label.shape[0]
-
-        # tmp_metric
-        tmp_metric = {
-            'predicts_zsl': deque(),
-            'predicts_gzsl': deque(),
-            'gts_zsl': deque(),
-            'gts_gzsl': deque()
-        }
+            running_loss += loss.item()
 
         # predict
-        concept_vectors = concepts[loss_name]['concept_vector'].t()
-        concept_vectors = concept_vectors.expand(outputs.shape[0], model.d, -1)
-        p_ranks = torch.tanh(torch.bmm(inner_m, concept_vectors))
-        p_ranks = torch.bmm(outer_m, p_ranks).norm(p=2, dim=1)
+        gts = batch_label[:, concepts[loss_name]['concept_label']][..., None]
+        idx = torch.nonzero(torch.sum(gts, dim=1))[:, 0].tolist()
+        outputs = torch.gt(outputs, loss_args['threshold'])
 
-        for p_rank, gts in zip(p_ranks, batch_label):
-            gts = gts[concepts[loss_name]['concept_label']]
-            if sum(gts) == 0:
-                continue
-            tmp_metric['predicts_zsl'].append(np.array(p_rank.tolist()))
-            tmp_metric['gts_zsl'].append(np.array(gts.tolist()))
-            metrics['predicts_zsl'].append(np.array(p_rank.tolist()))
-            metrics['gts_zsl'].append(np.array(gts.tolist()))
+        metrics['predicts_zsl'].extend(np.array(outputs[idx].tolist()))
+        metrics['gts_zsl'].extend(np.array(gts[idx].tolist()))
+        # tmp_metrics['predicts_zsl'].extend(np.array(outputs[idx].tolist()))
+        # tmp_metrics['gts_zsl'].extend(np.array(gts[idx].tolist()))
 
         # general
-        concept_vectors_g = concepts['general']['concept_vector'].t()
-        concept_vectors_g = concept_vectors_g.expand(outputs.shape[0], model.d, -1)
-        g_ranks = torch.tanh(torch.bmm(inner_m, concept_vectors_g))
-        g_ranks = torch.bmm(outer_m, g_ranks).norm(p=2, dim=1)
+        concept_vectors_g = concepts['general']['concept_vector']
+        outputs_g = model(Variable(batch_img), concept_vectors_g)
+        outputs_g = torch.gt(outputs_g, loss_args['threshold'])
+        gts_g = batch_label[:, concepts['general']['concept_label']][..., None]
 
-        for g_rank, g_gts in zip(g_ranks, batch_label):
-            tmp_metric['predicts_gzsl'].append(np.array(g_rank.tolist()))
-            tmp_metric['gts_gzsl'].append(np.array(g_gts.tolist()))
-            metrics['predicts_gzsl'].append(np.array(g_rank.tolist()))
-            metrics['gts_gzsl'].append(np.array(g_gts.tolist()))
+        metrics['predicts_gzsl'].extend(np.array(outputs_g.tolist()))
+        metrics['gts_gzsl'].extend(np.array(gts_g.tolist()))
+        # tmp_metrics['predicts_gzsl'].extend(np.array(outputs_g.tolist()))
+        # tmp_metrics['gts_gzsl'].extend(np.array(gts_g.tolist()))
 
         # output loss
-        tmp_loss = running_loss
-        writer.add_scalar(loss_name + '_loss', tmp_loss, batch_i + (epoch - 1) * len(data_loader))
-        print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
-        running_loss = 0.0
+        if mode == "train":
+            tmp_loss = running_loss
+            writer.add_scalar(loss_name + '_loss', tmp_loss, batch_i + (epoch - 1) * len(data_loader))
+            print('[%d, %6d] loss: %.3f' % (epoch, batch_i * data_loader.batch_size, tmp_loss))
+            running_loss = 0.0
 
-        # record miap
-        writer.add_scalar(loss_name + 'tmp_miap', utils.cal_miap(tmp_metric), batch_i + (epoch - 1) * len(data_loader))
-        writer.add_scalar(loss_name + 'tmp_g_miap', utils.cal_miap(tmp_metric, True), batch_i + (epoch - 1) * len(data_loader))
+        # # tmp_metric
+        # train_miap = utils.cal_miap(tmp_metrics, False)
+        # train_prf1 = utils.cal_prf1(tmp_metrics, general=False)
+        # writer.add_scalar(loss_name + '_tmp_miap', train_miap * 100, batch_i + (epoch - 1) * len(data_loader))
+        # writer.add_scalar(loss_name + '_tmp_of', train_prf1['o_f1'] * 100, batch_i + (epoch - 1) * len(data_loader))
+
+        # if batch_i == 100:
+        #    break
 
     return metrics

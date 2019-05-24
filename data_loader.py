@@ -71,6 +71,7 @@ def ClassDatasets(state):
             self.csv_file = PJ(self.root, 'list', state['mode'], self.split_mode.strip("_g") + '.txt')
 
             self.data = pd.read_csv(self.csv_file, header=None)
+            self.pos_weight = 1 / ((self.data == 0).sum().sum() / (self.data == 1).sum().sum() + 1)
 
             self.img_transform = self.img_transform()
 
@@ -80,9 +81,10 @@ def ClassDatasets(state):
         def __getitem__(self, idx):
 
             image = Image.open(PJ(self.root, self.data.iloc[idx, 0])).convert('RGB')
+
             image = self.img_transform(image)
 
-            label = torch.LongTensor(self.data.iloc[idx, 1:].tolist())
+            label = torch.FloatTensor(self.data.iloc[idx, 1:].tolist())
 
             sample = {'image': image, 'label': label}
             return sample
