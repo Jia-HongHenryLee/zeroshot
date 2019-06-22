@@ -66,12 +66,22 @@ def ClassDatasets(state):
 
         def __init__(self, split_mode, state):
 
+            self.dataset = state['dataset']
+
             self.split_mode = split_mode
             self.root = PJ('./dataset', state['dataset'])
             self.csv_file = PJ(self.root, 'list', state['mode'], self.split_mode.strip("_g") + '.txt')
 
             self.data = pd.read_csv(self.csv_file, header=None)
-            self.pos_weight = 1 / ((self.data == 0).sum().sum() / (self.data == 1).sum().sum() + 1)
+
+            if state['dataset'] == 'nus_wide':
+                self.neg_weight = 0.5
+            else:
+                pos = (self.data.iloc[:, 1:] == 1).sum().sum()
+                neg = (self.data.iloc[:, 1:] == 0).sum().sum()
+                self.neg_weight = pos / (pos + neg)
+                self.class_weight = (self.data.iloc[:, 1:] == 1).sum()
+                self.class_weight = self.class_weight.reset_index(drop=True)
 
             self.img_transform = self.img_transform()
 
@@ -80,10 +90,13 @@ def ClassDatasets(state):
 
         def __getitem__(self, idx):
 
-            image = Image.open(PJ(self.root, self.data.iloc[idx, 0])).convert('RGB')
+            if state['dataset'] == 'nus_wide':
+                image = Image.open(PJ(self.root, self.data.iloc[idx, 0])).convert('RGB')
+
+            else:
+                image = Image.open(PJ(self.root, 'img', self.data.iloc[idx, 0])).convert('RGB')
 
             image = self.img_transform(image)
-
             label = torch.FloatTensor(self.data.iloc[idx, 1:].tolist())
 
             sample = {'image': image, 'label': label}
@@ -91,20 +104,20 @@ def ClassDatasets(state):
 
         def img_transform(self):
 
-            if self.split_mode.find("train"):
+            if self.split_mode.find("train") != -1:
                 img_transform = transforms.Compose([
                     transforms.RandomResizedCrop(224),
                     transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                         std=[0.229, 0.224, 0.225])])
+                    transforms.ToTensor()])
+                    # transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                    #                      std=[0.229, 0.224, 0.225])])
             else:
                 img_transform = transforms.Compose([
                     transforms.Resize(256),
                     transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                         std=[0.229, 0.224, 0.225])])
+                    transforms.ToTensor()])
+                    # transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                    #                      std=[0.229, 0.224, 0.225])])
 
             return img_transform
 

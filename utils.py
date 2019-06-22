@@ -1,6 +1,30 @@
 import numpy as np
-from graphviz import Digraph
-import torch
+
+
+def cal_h_acc(record, general=False):
+    tr = record['test_seen_g']['acc'] if general else record['test_seen']['acc']
+    ts = record['test_unseen_g']['acc'] if general else record['test_unseen']['acc']
+
+    return 2 * tr * ts / (tr + ts)
+
+
+def cal_acc(metric, general=False):
+
+    labels = metric['correct_g'] if general else metric['correct']
+    totals = metric['total_g'] if general else metric['total']
+
+    labels = np.asarray(labels)
+    totals = np.asarray(totals)
+
+    tp = np.logical_and(labels, totals).sum(axis=0).reshape(-1)
+    # fp = np.logical_not(np.logical_or(labels, totals)).sum(axis=0).reshape(-1)
+
+    totals = totals.sum(axis=0).reshape(-1)
+
+    classes = [np.nan_to_num(l / t) for l, t in zip(tp, totals)]
+    acc = sum(classes) / len(np.asarray(metric['total']).sum(axis=0).reshape(-1))
+
+    return classes, acc
 
 
 def cal_miap(metric, general=False):
@@ -27,6 +51,36 @@ def cal_miap(metric, general=False):
     miAP = np.mean(iAPs)
 
     return miAP
+
+
+def cal_map(metric, general=False):
+
+    predicts = metric['predicts_gzsl'] if general else metric['predicts_zsl']
+    gts = metric['gts_gzsl'] if general else metric['gts_zsl']
+    predicts = np.squeeze(np.asarray(predicts))
+    gts = np.squeeze(np.asarray(gts))
+
+    mAPs = []
+    for col in range(gts.shape[1]):
+        predict = predicts[:, col]
+        ground_truth = gts[:, col]
+
+        tp = np.zeros(len(ground_truth))
+        fp = np.zeros(len(ground_truth))
+
+        tp[ground_truth[np.argsort(-predict)] == 1] = 1
+        fp[ground_truth[np.argsort(-predict)] == 0] = 1
+
+        tp = np.cumsum(tp)
+        fp = np.cumsum(fp)
+
+        recall = tp / (sum(ground_truth == 1) + np.finfo(float).eps)
+        precision = tp / (fp + tp + np.finfo(float).eps)
+
+        ap = sum([0 if len(precision[recall >= (t * 0.1)]) == 0 else max(precision[recall >= (t * 0.1)]) for t in range(11)]) / 11
+        mAPs.append(ap)
+
+    return mAPs
 
 
 def cal_prf1(metric, general=False):

@@ -1,0 +1,25 @@
+exp_name: nonlinear_softmax_noalpha_nonormal_w2v_drop.7
+dataset: apy
+concepts: attr
+
+pretrained: True
+freeze: True
+
+start_epoch: 1
+end_epoch: 20
+
+l_rate: 5e-5
+optim: Adam
+momentum: 0.9
+weight_decay: 0
+
+loss_args:
+  alpha: 1
+  gamma: 0
+  class_weight: 0
+
+k: 30
+d: 300
+
+train_batch_size: 512
+test_batch_size: 512

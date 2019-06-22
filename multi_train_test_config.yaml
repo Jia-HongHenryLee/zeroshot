@@ -1,0 +1,26 @@
+exp_name: traintest_adaptive_equal_label
+
+dataset: nus_wide
+concepts: vec
+
+pretrained: True
+freeze: True
+
+start_epoch: 1
+end_epoch: 10
+
+l_rate: 1e-3
+optim: Adam
+momentum: 0.9
+weight_decay: 0
+
+loss_args:
+  alpha: 1
+  gamma: 0
+  threshold: 0.5
+
+k: 30
+d: 300
+
+train_batch_size: 512
+test_batch_size: 512

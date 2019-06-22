@@ -3,9 +3,10 @@ from os.path import join as PJ
 import scipy.io as sio
 from pandas import DataFrame as df
 import yaml
+from sklearn.preprocessing import LabelBinarizer
 
 # Setting
-DATASET = "apy"
+DATASET = "sun"
 
 ROOT = PJ("..", "dataset")
 XLSA17 = PJ(ROOT, "xlsa17", "data", DATASET)
@@ -30,19 +31,23 @@ if not os.path.isdir(SPLIT_LIST):
 img_files = [filter(None, i[0][0].split('/')) for i in RES101['image_files']]
 img_files = [PJ(*list(i)[5:]) for i in img_files]
 
+
+lb = LabelBinarizer()
+
 labels = RES101['labels'].reshape(-1)
 labels = labels - 1
 
 if DATASET == 'apy':
     img_files = [PJ("img", i) for i in sorted(os.listdir(PJ(ROOT, DATASET, "img", "img")))]
-    data = df({'img_path': img_files, 'label': labels})
-else:
-    data = df({'img_path': img_files, 'label': labels})
+
+data = df({'img_path': img_files, 'label': labels})
+binary_data = df(lb.fit_transform(labels).tolist())
+binary_data.insert(loc=0, column='img_path', value=img_files)
 
 # split into train_val, test_seen, and test_unseen
 split_mode = ['trainval', 'test_seen', 'test_unseen']
 for sm in split_mode:
-    split_data = data.iloc[ATT_SPLITS[sm + '_loc'].reshape(-1) - 1]
+    split_data = binary_data.iloc[ATT_SPLITS[sm + '_loc'].reshape(-1) - 1]
     split_data.to_csv(PJ(SPLIT_LIST, sm + ".txt"), index=False, header=False)
 
 # split labe_id into trainval set and test set, then save to id_split.txt
